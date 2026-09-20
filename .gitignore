@@ -183,3 +183,5 @@ removed/*
 /installed
 
 arm.yaml
+
+scripts/docker/start_arm_container.local.sh

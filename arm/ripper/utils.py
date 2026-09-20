@@ -450,13 +450,22 @@ def rip_music(job, logfile):
     """
 
     abcfile = cfg.arm_config["ABCDE_CONFIG_FILE"]
+    # Multi-disc handling: music_brainz set job.disc_number / job.disc_total from
+    # the release's medium data. For a multi-disc set, pass abcde -W <n> so this
+    # disc's tracks are numbered n*100+track (101.., 201..) instead of restarting
+    # at 01 and overwriting the previous disc in the same album folder.
+    disc_total = getattr(job, "disc_total", 1) or 1
+    disc_number = getattr(job, "disc_number", 1) or 1
+    multidisc = f" -W {disc_number}" if disc_total > 1 else ""
     if job.disctype == "music":
         logging.info("Disc identified as music")
+        if multidisc:
+            logging.info(f"Multi-disc set: numbering this disc's tracks with abcde -W {disc_number}")
         # If user has set a cfg.arm_config file with ARM use it
         if os.path.isfile(abcfile):
-            cmd = f'abcde -d "{job.devpath}" -c {abcfile} >> "{os.path.join(job.config.LOGPATH, logfile)}" 2>&1'
+            cmd = f'abcde -d "{job.devpath}"{multidisc} -c {abcfile} >> "{os.path.join(job.config.LOGPATH, logfile)}" 2>&1'
         else:
-            cmd = f'abcde -d "{job.devpath}" >> "{os.path.join(job.config.LOGPATH, logfile)}" 2>&1'
+            cmd = f'abcde -d "{job.devpath}"{multidisc} >> "{os.path.join(job.config.LOGPATH, logfile)}" 2>&1'
 
         logging.debug(f"Sending command: {cmd}")
         args = {"status": JobState.AUDIO_RIPPING.value}

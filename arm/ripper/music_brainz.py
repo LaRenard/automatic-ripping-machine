@@ -69,7 +69,7 @@ def music_brainz(discid: str, job) -> str:
         logging.error("ARM has encountered an error and stopping")
         return ""
 
-    artist_title = check_musicbrainz_data(job, disc_info)
+    artist_title = check_musicbrainz_data(job, disc_info, discid)
     if artist_title == "":
         logging.error("ARM has encountered an error and stopping")
         return ""
@@ -118,7 +118,7 @@ def get_disc_info(job, discid: str) -> str:
     return disc_info
 
 
-def check_musicbrainz_data(job, disc_info: dict) -> str:
+def check_musicbrainz_data(job, disc_info: dict, discid: str = "") -> str:
     """
     Process MusicBrainz metadata for a disc or CD stub and update the job database.
 
@@ -171,16 +171,55 @@ def check_musicbrainz_data(job, disc_info: dict) -> str:
             for i in range(len(release_list)):
                 logging.debug(f"Checking release: [{i}] if CD")
                 medium_list = release_list[i].get('medium-list', [])
-                # Check that medium_list is valid (has data) and that we have returned a CD
+                # Check that medium_list is valid (has data) and that we have a CD
                 # possible values are "12' Vinyl" or "CD" from testing
                 if medium_list and medium_list[0].get('format') == "CD":
-                    logging.info(f"Release [{i}] is a CD, tracking on...")
-                    logging.debug("-" * 50)
-                    process_tracks(job, medium_list[0].get('track-list'))
-                    logging.debug("-" * 50)
-
                     # Update ARM with disc info
                     release = disc_info['disc']['release-list'][i]
+
+                    # A discid query returns ALL media of a multi-disc release
+                    # and does NOT include a per-medium disc-list (the 'discids'
+                    # include 400s on the discid endpoint), so medium_list[0] is
+                    # disc 1 - not necessarily the disc that was inserted. A
+                    # second lookup BY RELEASE ID does accept 'discids', so use
+                    # it to map our discid -> disc position, then pick that
+                    # medium (which carries the track-list) from medium_list.
+                    matched = medium_list[0]
+                    # discid may be a python-discid Disc object; compare as str
+                    did = str(discid) if discid else ""
+                    if did and len(medium_list) > 1:
+                        try:
+                            full = mb.get_release_by_id(
+                                release['id'], includes=['discids'])['release']
+                            pos = next(
+                                (m.get('position') for m in full.get('medium-list', [])
+                                 if any(d.get('id') == did
+                                        for d in m.get('disc-list', []))),
+                                None)
+                            if pos is not None:
+                                matched = next(
+                                    (m for m in medium_list
+                                     if m.get('position') == pos), medium_list[0])
+                        except mb.WebServiceError as exc:
+                            logging.warning(
+                                f"Disc-position lookup failed, assuming disc 1: {exc}")
+
+                    logging.info(f"Release [{i}] is a CD, tracking on...")
+                    logging.debug("-" * 50)
+                    process_tracks(job, matched.get('track-list'))
+                    logging.debug("-" * 50)
+
+                    # Multi-disc: stash this disc's number (matched medium
+                    # position) and the total disc count on the job (in-memory,
+                    # same process) so rip_music can pass abcde -W to tag
+                    # DISCNUMBER and offset track numbers, avoiding disc 2+
+                    # overwriting disc 1.
+                    job.disc_number = int(matched.get('position', 1) or 1)
+                    job.disc_total = int(release.get('medium-count', len(medium_list)) or 1)
+                    if job.disc_total > 1:
+                        logging.info(f"Multi-disc release: disc "
+                                     f"{job.disc_number} of {job.disc_total}")
+
                     new_year = check_date(release)
                     title = str(release.get('title', 'no title'))
                     artist = release['artist-credit'][0]['artist']['name']
