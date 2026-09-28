@@ -192,23 +192,36 @@ class Job(db.Model):
     def parse_udev(self):
         """Parse udev for properties of current disc"""
         context = pyudev.Context()
-        device = pyudev.Devices.from_device_file(context, self.devpath)
         self.disctype = "unknown"
 
-        for key, value in device.items():
-            logging.debug(f"pyudev: {key}: {value}")
-            if key == "ID_FS_LABEL":
-                self.label = value
-                if value == "iso9660":
-                    self.disctype = "data"
-            elif key == "ID_CDROM_MEDIA_BD":
-                self.disctype = "bluray"
-            elif key == "ID_CDROM_MEDIA_DVD":
-                self.disctype = "dvd"
-            elif key == "ID_CDROM_MEDIA_TRACK_COUNT_AUDIO":
-                self.disctype = "music"
-            else:
-                continue
+        # A disc-insert 'change' event can reach us before udevd has finished
+        # writing the ID_CDROM_MEDIA_* properties to its database (notably in a
+        # container, where udevd and this process are decoupled). Reading once
+        # then races and yields disctype 'unknown' -> "Could not determine disc
+        # type". Retry until the media props land instead of aborting.
+        for attempt in range(10):
+            device = pyudev.Devices.from_device_file(context, self.devpath)
+            for key, value in device.items():
+                logging.debug(f"pyudev: {key}: {value}")
+                if key == "ID_FS_LABEL":
+                    self.label = value
+                    if value == "iso9660":
+                        self.disctype = "data"
+                elif key == "ID_CDROM_MEDIA_BD":
+                    self.disctype = "bluray"
+                elif key == "ID_CDROM_MEDIA_DVD":
+                    self.disctype = "dvd"
+                elif key == "ID_CDROM_MEDIA_TRACK_COUNT_AUDIO":
+                    self.disctype = "music"
+                else:
+                    continue
+
+            if self.disctype != "unknown" or self.label:
+                break
+            logging.debug(f"Disc properties not yet settled "
+                          f"(attempt {attempt + 1}/10), waiting for udev...")
+            time.sleep(1)
+            context = pyudev.Context()  # fresh context to re-read the db
 
     def get_pid(self):
         """
